@@ -1,99 +1,202 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
-#include "mem_management.h"
+#include <string.h>
+#include "queue.h"
+#include "mem_manager.h"
 
-void mem_manager(FILE *infile, int F, FILE *outfile)
+int main(int argc, char **argv)
 {
-   int base;
-   double ar;
-   int P, X;
-   int phys_mem[F];
-   int pos;
-   int npf = 0;
-   initialize_array(phys_mem, F);
-
-   fseek(infile, 0L, SEEK_SET);
-   while (fscanf(infile, "%lf", &ar) != EOF)
+   if (argc != 2)
    {
-        int log_addr = (int) ar;
-        int phys_addr;
-
-	P = floor(log_addr / 4096);
-	X = log_addr % 4096;
-
-        int page_fault;
-        int frame_found;
-        
-        base = search_page(P, phys_mem, F);
-
-        if (base >= 0)
-        {
-             page_fault = 0;
-             phys_addr = (base * 4096) + X;
-        }
-        else // page not found
-        {
-             page_fault = 1;
-             npf++;
-             frame_found = free_frame(phys_mem, F);
-             if (frame_found >= 0)
-             {
-                  phys_mem[frame_found] = P;
-                  phys_addr = (frame_found * 4096) + X;
-             }
-             else 
-             {
-                  printf("page faults : %d\n", npf);     
-                  fprintf(stderr, "Memory Full \n");
-                  return ;
-             }
-        }
-        fprintf(outfile, "%d, %d, %d \n", log_addr, phys_addr, page_fault); 
+        fprintf(stderr, "Usage: %s proc_requests_file\n", argv[0]);
+        exit (1);
    }
-   int k;
-   printf("page faults : %d\n", npf);     
-   printf("phys_mem\n");
-   for (k = 0; k < F; k++)
-       printf("%d\n", phys_mem[k]);
-   return;
-}
 
-void initialize_array(int phys_mem[], int F)
-{
-   int i; 
-   for (i = 0; i < F; i++)
-       phys_mem[i] = -1;
-
-   return;
-}
-
-// searches for a free frame in the physical memory
-int free_frame(int phys_mem[], int F)
-{
+   //step1
    int i;
-   for (i = 0; i < F; i++)
+   //int nar;
+   int M;
+   int sigma;
+
+   FILE *ifp_table[NP];
+   init_fp_table(ifp_table);
+
+   FILE *fp = NULL;
+   if ((fp = fopen(argv[1], "r")) == NULL)
    {
-        if (phys_mem[i] == -1)
-            return i;
+        fprintf(stderr, "Error opening %s \n", argv[1]);
+        exit (2);
+   }
+
+   char line[MAXLEN];
+   char *ptr = NULL;
+   for (i = 0; i < NP; i++)
+   {
+        if ((fgets(line, MAXLEN, fp) != NULL) && (i < NP))
+        {
+             ptr = strtok(line, ",");
+	     M = atoi(ptr);
+
+             ptr = strtok(NULL, ",");
+             sigma = atoi(ptr);
+
+	    // printf("pid : %d M: %d S: %d\n", i+1, M, sigma);
+        }
+	else
+        {
+             printf("Need more data in proc_req.csv \n");
+             exit (3);	     
+        }
+
+        name_file(i+1, IN_FILE);
+        ifp_table[i] = write_file(ifp_table[i]);
+        /*nar = */sim_process(M, sigma, ifp_table[i]);
+        //printf("\n%d addresses written into %s \n", nar, fname);
+        fclose(ifp_table[i]);
+   }
+   
+   //step2
+   for (i = 0; i < NP; i++)
+   {
+        name_file(i+1, IN_FILE);
+        ifp_table[i] = read_file(ifp_table[i]);	
+   }
+
+   //step3
+   FILE *ofp_table[NP];
+   init_fp_table(ofp_table);
+
+   for (i = 0; i < NP; i++)
+   {
+        name_file(i+1, OUT_FILE);
+        ofp_table[i] = write_file(ofp_table[i]);
+   }
+
+   //step4
+   QUEUE proc_queue;
+
+   init_queue(&proc_queue);
+
+   int pid;
+   for (pid = 0; pid < NP; pid++)
+        insert_queue(&proc_queue, pid+1); 
+   shuffle_queue(&proc_queue);
+   
+   printf("-------------------------------------------------\n");
+   printf("initial sequence \n");
+   print_queue(&proc_queue);
+   init_phys_mem();
+   
+   int cur_pid;
+   int status;
+   int exec[NP] = {0};
+   int k = 0;
+   while (!(is_queue_empty(&proc_queue)))
+   {
+        //step5
+        cur_pid = delete_queue(&proc_queue);
+	
+        //step6
+
+        status = mem_mapper(ifp_table[cur_pid-1], ofp_table[cur_pid-1], cur_pid);
+        if (status < 0)
+        {
+             fprintf(stderr, "Memory not available \n");
+             exit (4);
+        }
+        else if (status == 0)
+        {
+             /*
+             printf("Process with pid %d completed; removing from queue\n",
+             cur_pid);*/
+             exec[k] = cur_pid;
+	     k++;
+             //print_queue(&proc_queue);
+	     fclose(ifp_table[cur_pid-1]);
+             fclose(ofp_table[cur_pid-1]);
+        }
         else
-            continue;
+        {
+            insert_queue(&proc_queue, cur_pid);
+        }
    }
-   if (i == F)
-       return -1;
+
+   printf("-------------------------------------------------\n");
+   printf("PHYSICAL MEMEORY\n");
+   print_phys_mem();
+
+   printf("-------------------------------------------------\n");
+   printf("execution sequence\n");
+   for (k = 0; k < NP; k++)
+       printf("%d ", exec[k]);
+   printf("\n");
+   exit (0);
 }
 
-// searches for the given page in the physical memory
-int search_page(int P, int phys_mem[], int F)
+void init_fp_table(FILE **fp_table)
+{
+   int i;
+   for (i = 0; i < NP; i++)
+       fp_table[i] = NULL;
+   return ;
+}
+
+void init_phys_mem(void)
 {
    int i;
    for (i = 0; i < F; i++)
    {
-        if (phys_mem[i] == P)
-            return i;
-        else 
-           continue;
+        phys_mem[i].page_no = -1;
+        phys_mem[i].pid = -1;
    }
-   if (i == F)
-       return -1;
+}
+
+void print_phys_mem(void)
+{
+   int i;
+   printf("page\tpid\t\n");
+   for (i = 0; i < F; i++)
+   {
+        printf("%d\t%d\t\n", phys_mem[i].page_no, phys_mem[i].pid);
+   }
+   return ;
+}
+
+void name_file(int pid, int type)
+{
+   if (type == 1)
+   {
+        if (pid < 10)
+            snprintf(fname, MAXLEN, "AR_0%d.dat", pid);
+        else
+            snprintf(fname, MAXLEN, "AR_%d.dat", pid);
+   }
+   else if (type == 2)
+   {
+        if (pid < 10)
+            snprintf(fname, MAXLEN, "AR_0%d_out.dat", pid);
+        else
+            snprintf(fname, MAXLEN, "AR_%d_out.dat", pid);
+   }
+   return ;
+}
+
+FILE* read_file(FILE *fp)
+{
+   if ((fp = fopen(fname, "r")) == NULL)
+   {
+        fprintf(stderr, "error reading %s \n", fname);
+        exit (2);
+   }
+   return fp;
+}
+
+FILE* write_file(FILE *fp)
+{
+   if ((fp = fopen(fname, "w")) == NULL)
+   {
+        fprintf(stderr, "error writing %s \n", fname);
+        exit (3);
+   }
+   return fp;
 }
